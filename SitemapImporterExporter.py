@@ -1,6 +1,6 @@
 import xml.dom.minidom as minidom
 from burp import IBurpExtender, ITab, IHttpRequestResponse, IHttpService
-from javax.swing import JPanel, JButton, JFileChooser, JScrollPane, JTextArea, JCheckBox
+from javax.swing import JPanel, JButton, JFileChooser, JScrollPane, JTextArea, JCheckBox, JOptionPane
 from java.awt import BorderLayout
 import java.net.URL as URL
 import urlparse
@@ -33,7 +33,7 @@ class BurpExtender(IBurpExtender, ITab):
         buttonPanel.add(saveButton)
         buttonPanel.add(self.inScopeCheckBox)
 
-        self.mainPanel.add(buttonPanel, BorderLayout.SOUTH)
+        self.mainPanel.add(buttonPanel, BorderLayout.NORTH)
         callbacks.addSuiteTab(self)
 
     def getTabCaption(self):
@@ -69,15 +69,15 @@ class BurpExtender(IBurpExtender, ITab):
 
                         if self.inScopeCheckBox.isSelected():
                             if self.callbacks.isInScope(URL(url)):
-                                self.addToSiteMap(url, item[1], item[2], item[3], item[4])
+                                self.addToSiteMap(
+                                    url, item[1], item[2], item[3], item[4])
                         else:
-                            self.addToSiteMap(url, item[1], item[2], item[3], item[4])
+                            self.addToSiteMap(
+                                url, item[1], item[2], item[3], item[4])
 
-            self.textArea.append("\n[+] Summary\n")
-            for summary in summaries:
-                self.printSummary(summary)
-
-            self.textArea.append("[+] Done\n")
+            summary_message = self.createSummaryMessage(summaries)
+            JOptionPane.showMessageDialog(
+                self.mainPanel, summary_message, "Summary", JOptionPane.INFORMATION_MESSAGE)
 
     def onSaveButtonClick(self, event):
         fileChooser = JFileChooser()
@@ -146,20 +146,24 @@ class BurpExtender(IBurpExtender, ITab):
 
         tree = ET.ElementTree(root)
         tree.write(file_path)
-        self.textArea.append("Sitemap saved to {}\n".format(file_path))
+        JOptionPane.showMessageDialog(self.mainPanel, "Sitemap saved to {}".format(
+            file_path), "Information", JOptionPane.INFORMATION_MESSAGE)
 
-    def printSummary(self, summary):
-        self.textArea.append("- File: {}\n".format(summary["file_name"]))
-        self.textArea.append(
-            "+ {} items successfully parsed\n".format(summary["item_count"]))
-
-        if summary["skip_item_count"] > 0:
-            self.textArea.append("+ {} items skipped due to response size > {} bytes\n".format(
-                summary["skip_item_count"], summary["response_len_limit"]))
-            for item in summary["skip_items"]:
-                self.textArea.append(
-                    "+++ skipped item: {}, response size: {}\n".format(item[0], item[1]))
-        self.textArea.append("\n")
+    def createSummaryMessage(self, summaries):
+        message = "[+] Summary\n"
+        for summary in summaries:
+            message += "- File: {}\n".format(summary["file_name"])
+            message += "+ {} items successfully parsed\n".format(
+                summary["item_count"])
+            if summary["skip_item_count"] > 0:
+                message += "+ {} items skipped due to response size > {} bytes\n".format(
+                    summary["skip_item_count"], summary["response_len_limit"])
+                for item in summary["skip_items"]:
+                    message += "+++ skipped item: {}, response size: {}\n".format(
+                        item[0], item[1])
+            message += "\n"
+        message += "[+] Done\n"
+        return message
 
 
 class XMLParser:
@@ -191,8 +195,6 @@ class XMLParser:
             print(message.format(*params))
 
     def parse(self):
-        self._print("Begin parsing {}", [self.file_name])
-
         try:
             dom = minidom.parse(self.file_path)
             items = dom.getElementsByTagName("item")
@@ -204,20 +206,16 @@ class XMLParser:
                 color = self._get_tag_text(item, "color")
                 comment = self._get_tag_text(item, "comment")
 
-                responselength_elem = item.getElementsByTagName("responselength")[0]
+                responselength_elem = item.getElementsByTagName("responselength")[
+                    0]
                 if responselength_elem:
                     response_len = int(
                         responselength_elem.firstChild.data.strip())
                     if response_len > self.response_len_limit:
                         self.skip_items.append((url, response_len))
-                        self._print(
-                            "+ Skip this item because response size is too large: {} bytes", (response_len))
                         continue
 
                 self.items.append([url, request, response, color, comment])
-                self._print("- {}. url: {}", [len(self.items), url])
-
-            self._print("Finish parsing: {}", [self.file_name])
 
         except Exception as e:
             print("Error parsing XML file {}: {}".format(self.file_name, str(e)))
