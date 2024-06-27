@@ -1,12 +1,14 @@
-import xml.dom.minidom as minidom
 from burp import IBurpExtender, ITab, IHttpRequestResponse, IHttpService
 from javax.swing import JPanel, JButton, JFileChooser, JScrollPane, JTextArea, JCheckBox, JOptionPane
 from java.awt import BorderLayout
-import java.net.URL as URL
-import urlparse
-import os
-import base64
-import xml.etree.ElementTree as ET
+from java.net import URL
+import java.util.Base64 as Base64
+import java.io.File as File
+from javax.xml.parsers import DocumentBuilderFactory, DocumentBuilder
+from javax.xml.transform import TransformerFactory, OutputKeys
+from javax.xml.transform.dom import DOMSource
+from javax.xml.transform.stream import StreamResult
+from org.w3c.dom import Document, Element
 
 
 class BurpExtender(IBurpExtender, ITab):
@@ -61,11 +63,11 @@ class BurpExtender(IBurpExtender, ITab):
 
                     for item in parser.getItems():
                         url = item[0]
-                        parsed_url = urlparse.urlparse(url)
-                        host = parsed_url.hostname
-                        port = parsed_url.port if parsed_url.port else (
-                            443 if parsed_url.scheme == "https" else 80)
-                        protocol = parsed_url.scheme
+                        parsed_url = URL(url)
+                        host = parsed_url.getHost()
+                        port = parsed_url.getPort() if parsed_url.getPort() != -1 else (
+                            443 if parsed_url.getProtocol() == "https" else 80)
+                        protocol = parsed_url.getProtocol()
 
                         if self.inScopeCheckBox.isSelected():
                             if self.callbacks.isInScope(URL(url)):
@@ -89,8 +91,8 @@ class BurpExtender(IBurpExtender, ITab):
 
     def addToSiteMap(self, url, request, response, color="", comment=""):
         requestResponse = HttpRequestResponse(
-            self.helper.base64Decode(request),
-            self.helper.base64Decode(response),
+            Base64.getDecoder().decode(request),
+            Base64.getDecoder().decode(response),
             HttpService(url),
             color,
             comment
@@ -99,10 +101,14 @@ class BurpExtender(IBurpExtender, ITab):
 
     def saveSiteMapToFile(self, file_path):
         siteMapItems = self.callbacks.getSiteMap("")
-        root = ET.Element("items")
+        factory = DocumentBuilderFactory.newInstance()
+        builder = factory.newDocumentBuilder()
+        document = builder.newDocument()
+
+        root = document.createElement("items")
+        document.appendChild(root)
 
         for item in siteMapItems:
-
             protocol = item.getHttpService().getProtocol()
             host = item.getHttpService().getHost()
             port = str(item.getHttpService().getPort())
@@ -111,43 +117,57 @@ class BurpExtender(IBurpExtender, ITab):
                 url += ":{}".format(port)
             if self.inScopeCheckBox.isSelected() and not self.callbacks.isInScope(URL(url)):
                 continue
-            request = base64.b64encode(item.getRequest()).decode('utf-8')
+            request = Base64.getEncoder().encodeToString(item.getRequest())
             response = item.getResponse()
-            response = base64.b64encode(response).decode(
-                'utf-8') if response else ""
+            response = Base64.getEncoder().encodeToString(response) if response else ""
             comment = item.getComment()
             color = item.getHighlight()
 
-            itemElement = ET.SubElement(root, "item")
-            ET.SubElement(itemElement, "time").text = ""
-            ET.SubElement(itemElement, "url").text = url
-            hostElement = ET.SubElement(itemElement, "host")
-            hostElement.text = item.getHttpService().getHost()
-            hostElement.set('ip', '')
-            ET.SubElement(itemElement, "port").text = str(
-                item.getHttpService().getPort())
-            ET.SubElement(
-                itemElement, "protocol").text = item.getHttpService().getProtocol()
-            ET.SubElement(itemElement, "method").text = ""
-            ET.SubElement(itemElement, "path").text = ""
-            ET.SubElement(itemElement, "extension").text = ""
-            requestElement = ET.SubElement(itemElement, "request")
-            requestElement.text = request
-            requestElement.set('base64', 'true')
-            ET.SubElement(itemElement, "status").text = ""
-            ET.SubElement(itemElement, "responselength").text = str(
-                len(response))
-            ET.SubElement(itemElement, "mimetype").text = ""
-            responseElement = ET.SubElement(itemElement, "response")
-            responseElement.text = response
-            responseElement.set('base64', 'true')
-            ET.SubElement(itemElement, "comment").text = comment
-            ET.SubElement(itemElement, "color").text = color
+            itemElement = document.createElement("item")
+            root.appendChild(itemElement)
 
-        tree = ET.ElementTree(root)
-        tree.write(file_path)
+            self.createElementWithText(document, itemElement, "time", "")
+            self.createElementWithText(document, itemElement, "url", url)
+            hostElement = self.createElementWithText(
+                document, itemElement, "host", item.getHttpService().getHost())
+            hostElement.setAttribute("ip", "")
+            self.createElementWithText(
+                document, itemElement, "port", str(item.getHttpService().getPort()))
+            self.createElementWithText(
+                document, itemElement, "protocol", item.getHttpService().getProtocol())
+            self.createElementWithText(document, itemElement, "method", "")
+            self.createElementWithText(document, itemElement, "path", "")
+            self.createElementWithText(document, itemElement, "extension", "")
+            requestElement = self.createElementWithText(
+                document, itemElement, "request", request)
+            requestElement.setAttribute("base64", "true")
+            self.createElementWithText(document, itemElement, "status", "")
+            self.createElementWithText(
+                document, itemElement, "responselength", str(len(response)))
+            self.createElementWithText(document, itemElement, "mimetype", "")
+            responseElement = self.createElementWithText(
+                document, itemElement, "response", response)
+            responseElement.setAttribute("base64", "true")
+            self.createElementWithText(
+                document, itemElement, "comment", comment)
+            self.createElementWithText(document, itemElement, "color", color)
+
+        transformer = TransformerFactory.newInstance().newTransformer()
+        transformer.setOutputProperty(OutputKeys.INDENT, "yes")
+        transformer.setOutputProperty(
+            "{http://xml.apache.org/xslt}indent-amount", "2")
+        source = DOMSource(document)
+        result = StreamResult(File(file_path))
+        transformer.transform(source, result)
+
         JOptionPane.showMessageDialog(self.mainPanel, "Sitemap saved to {}".format(
             file_path), "Information", JOptionPane.INFORMATION_MESSAGE)
+
+    def createElementWithText(self, document, parent, tag_name, text):
+        element = document.createElement(tag_name)
+        element.appendChild(document.createTextNode(text))
+        parent.appendChild(element)
+        return element
 
     def createSummaryMessage(self, summaries):
         message = "[+] Summary\n"
@@ -173,7 +193,7 @@ class XMLParser:
         self.response_len_limit = 2000000
         self.verbose = verbose
         self.file_path = file_path
-        self.file_name = os.path.basename(file_path)
+        self.file_name = File(file_path).getName()
 
     def getItems(self):
         return self.items
@@ -196,21 +216,25 @@ class XMLParser:
 
     def parse(self):
         try:
-            dom = minidom.parse(self.file_path)
-            items = dom.getElementsByTagName("item")
+            factory = DocumentBuilderFactory.newInstance()
+            builder = factory.newDocumentBuilder()
+            document = builder.parse(File(self.file_path))
 
-            for item in items:
+            items = document.getElementsByTagName("item")
+
+            for i in range(items.getLength()):
+                item = items.item(i)
                 url = self._get_tag_text(item, "url")
                 request = self._get_tag_text(item, "request")
                 response = self._get_tag_text(item, "response")
                 color = self._get_tag_text(item, "color")
                 comment = self._get_tag_text(item, "comment")
 
-                responselength_elem = item.getElementsByTagName("responselength")[
-                    0]
-                if responselength_elem:
+                response_len_elem = item.getElementsByTagName(
+                    "responselength").item(0)
+                if response_len_elem:
                     response_len = int(
-                        responselength_elem.firstChild.data.strip())
+                        response_len_elem.getTextContent().strip())
                     if response_len > self.response_len_limit:
                         self.skip_items.append((url, response_len))
                         continue
@@ -221,23 +245,20 @@ class XMLParser:
             print("Error parsing XML file {}: {}".format(self.file_name, str(e)))
 
     def _get_tag_text(self, element, tag_name):
-        tag = element.getElementsByTagName(tag_name)[0]
-        if tag.firstChild:
-            return tag.firstChild.data.strip()
+        tag = element.getElementsByTagName(tag_name).item(0)
+        if tag and tag.getFirstChild():
+            return tag.getFirstChild().getNodeValue().strip()
         return ""
 
 
 class HttpService(IHttpService):
 
     def __init__(self, url):
-        x = urlparse.urlparse(url)
-        if x.scheme in ("http", "https"):
-            self._protocol = x.scheme
-        else:
-            raise ValueError()
-        self._host = x.hostname if x.hostname else ""
-        self._port = x.port if x.port else (
-            80 if self._protocol == "http" else 443)
+        x = URL(url)
+        self._protocol = x.getProtocol()
+        self._host = x.getHost()
+        self._port = x.getPort() if x.getPort() != - \
+            1 else (80 if self._protocol == "http" else 443)
 
     def getHost(self):
         return self._host
